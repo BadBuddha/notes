@@ -2,46 +2,9 @@ find drivers/staging -name TODO
 
 perl scripts/checkpatch.pl -f drivers/staging/android/* | less
 
-
 ---------------------------------------------------------------------------------------------------------------------------------------------
-drivers/staging/comedi/comedidev.h
----------------------------------------------------------------------------------------------------------------------------------------------
-WARNING: Prefer 'unsigned int' to bare use of 'unsigned'
-#176: FILE: drivers/staging/comedi/comedidev.h:176:
-+       unsigned runflags;
+Spin Locks and Bottom Halves:::
 
-WARNING: Prefer 'unsigned int' to bare use of 'unsigned'
-#569: FILE: drivers/staging/comedi/comedidev.h:569:
-+struct comedi_device *comedi_dev_get_from_minor(unsigned minor);
-
-
-diff --git a/drivers/staging/comedi/comedidev.h b/drivers/staging/comedi/comedidev.h
-index 1158072..dcb6376 100644
---- a/drivers/staging/comedi/comedidev.h
-+++ b/drivers/staging/comedi/comedidev.h
-@@ -173,7 +173,7 @@ struct comedi_subdevice {
- 
-        void *lock;
-        void *busy;
--       unsigned runflags;
-+       unsigned int runflags;
-        spinlock_t spin_lock;   /* generic spin-lock for COMEDI and drivers */
- 
-        unsigned int io_bits;
-@@ -566,7 +566,7 @@ struct comedi_device {
- 
- void comedi_event(struct comedi_device *dev, struct comedi_subdevice *s);
- 
--struct comedi_device *comedi_dev_get_from_minor(unsigned minor);
-+struct comedi_device *comedi_dev_get_from_minor(unsigned int minor);
- int comedi_dev_put(struct comedi_device *dev);
- 
- bool comedi_is_subdevice_running(struct comedi_subdevice *s);
-
-
-
-
----------------------------------------------------------------------------------------------------------------------------------------------
 If data is shared between bottom half process context:
 needs to use spinlock & disable of bottom halves
 
@@ -51,12 +14,14 @@ need to obtain appropriate lock and disable interrupts
 - spin_lock_bh()
 - spin_unlock_bh()
 
+- spin_lock_irqsave()	
+- spin_unlock_irq()		
+- spin_trylock()	- tries to acquire given lock; if available returns non zero
 
 Two tasklets of the same type do not ever run simultaneously.
 Thus, there is no neeed to protect data used only within a single type of tasklet.
 If data is shared between the two tasklets, however you must obtain a normal spin lock before accessing the data in the bottom half
 Tasklet never preempts another running tasklet on the same processsor, no need to disable bottom halves. 
-
 
 With softirqs, regardless of whether it is the same softirq type, if data is shared by softirqs, it must be protected with a lock. 
 Recall that softirqs, even two of the same type, might run simultaneously on multiple processors in the system.
@@ -72,6 +37,7 @@ Reader-Writer Spin Locks:
 - Reader/writer locks -> shared/exclusive -> concurrent/exclusive locks 
 - because the lock is available in a shared (for readers) and an exclusive (for writers) form.
 - Usage is similar to spin locks
+
 DEFINE_RWLOCK(mr_rwlock);
 Then, in the reader code path:
 read_lock(&mr_rwlock);
@@ -83,10 +49,67 @@ write_lock(&mr_rwlock);
 /* critical section (read and write) ... */ 
 write_unlock(&mr_lock);
 
+read_lock_irqsave()
+read_unlock_irq()
+
+Read lock > write lock:
+- If the read lock is held and a writer is waiting for exclusive access.
+- readers that attempt to acquire the lock continue to succeed.
+- The spinning writer does not acquire the lock until all readers release the lock.
+- Therefore, a sufficient number of readers can starve pending writers.
 
 
 
 
+!Semaphores!
+
+Semaphores in linux are sleeping locks:
+- task <- semaphore but is unavailable, 
+- The semaphore :
+	1. places the task onto a wait queue and 
+	2. puts the task to sleep.
+- The processor is then free to execute other code.
+- When the semaphore becomes available, 1 of the tasks on the wait queue is awakened 
+- So that it can then acquire the semaphore.
+- In this manner, the key (read: semaphore) continues to ensure that there is only
+one person (read: thread of execution) inside the room (read: critical region) at one time.
+- This provides better processor utilization than spin locks because there is no time spent
+busy looping, but semaphores have much greater overhead than spin locks. 
+- Life is always a trade-off.
+- Conversely, semaphores are not optimal for locks that are held for short periods 
+because the overhead of sleeping, maintaining the wait queue, and waking back up
+can easily outweigh the total lock hold time.
+- You cannot hold a spin lock while you acquire a semaphore, because you might
+have to sleep while waiting for the semaphore, and you cannot sleep while holding
+a spin lock.
+
+- the decision between semaphore and spin lock should be based on lock hold time. 
+- Ideally, all your locks should be held as briefly as possible.
+- With semaphores, however, longer lock hold times are more acceptable.
+- Additionally, unlike spin locks, semaphores do not disable kernel preemption and, 
+consequently, code holding a semaphore can be preempted.
+- This means semaphores do not adversely affect scheduling latency.
 
 
 
+Counting and Binary Semaphores:
+- the number of permissible simultaneous holders of semaphores can be set at 
+declaration time.
+- This value is called the usage count or simply the count.
+- The most common value is to allow, like spin locks, only one lock holder at a time
+- binary semaphore (because it is either held by
+one task or not held at all) or a mutex (because it enforces mutual exclusion).
+- Semaphores were formalized by Edsger Wybe Dijkstra 3 in 1968 as a generalized lock-
+ing mechanism.
+- A semaphore supports two atomic operations, P() and V() , named after
+the Dutch word Proberen, to test (literally, to probe), and the Dutch word Verhogen, to in-
+crement. 
+- Later systems called these methods down() and up() , respectively, and so does Linux.
+- The down() method is used to acquire a semaphore by decrementing the count by one. 
+- If the new count is zero or greater, the lock is acquired and the task can enter the critical region. 
+- If the count is negative, the task is placed on a wait queue, and the processor moves on to something else.
+- These names are used as verbs:You down a semaphore to acquire it.
+- The up() method is used to release a semaphore upon completion of a critical region.
+- This is called upping the semaphore.
+- The method increments the count value; if the semaphore’s wait queue is not empty, 
+one of the waiting tasks is awakened and allowed to sssacquire the semaphore.

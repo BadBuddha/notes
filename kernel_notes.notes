@@ -1,115 +1,179 @@
-find drivers/staging -name TODO
+######## 2 ############
+Interrupt handler:
 
-perl scripts/checkpatch.pl -f drivers/staging/android/* | less
+- The kernel is in process context when executing on behalf of a process.
+- The kernel is in Interrupt context when executing an interrupt handler.
 
----------------------------------------------------------------------------------------------------------------------------------------------
-Spin Locks and Bottom Halves:::
+- In the process context the 'current' macro points to the associated task.
+- Since the process is coupled to the kernel in the process context, process context can sleep or otherwise invoke the scheduler
 
-If data is shared between bottom half process context:
-needs to use spinlock & disable of bottom halves
+- Since you cannot call any functions that might sleep from the interrupt handler, it limits the functions that one can call.
 
-If data is shared, interrupt handler might preempt a bottom half:
-need to obtain appropriate lock and disable interrupts
 
-- spin_lock_bh()
-- spin_unlock_bh()
+-->The setup of an interrupt handler's stack is a configuration option.
+- IH shared the stack of the process that they interrupted.
+- The kernel stack is 2 pages in size ~8KB in 32bit, ~16KB in 64bit.
+- Since they share, IH had to be furgal.
 
-- spin_lock_irqsave()	
-- spin_unlock_irq()		
-- spin_trylock()	- tries to acquire given lock; if available returns non zero
+- Earlier in 2.6 kernel, an option was added to reduce the stack size from 2 pages down 1 page ~ 4KB in 32bit, ~8KB in 64bit.
+- Since this reduces the memory pressure. 
+- However to cope with the reduced stack size, interrupt handlers were given their own stack 1 page in size, Interrupt stack.
 
-Two tasklets of the same type do not ever run simultaneously.
-Thus, there is no neeed to protect data used only within a single type of tasklet.
-If data is shared between the two tasklets, however you must obtain a normal spin lock before accessing the data in the bottom half
-Tasklet never preempts another running tasklet on the same processsor, no need to disable bottom halves. 
 
-With softirqs, regardless of whether it is the same softirq type, if data is shared by softirqs, it must be protected with a lock. 
-Recall that softirqs, even two of the same type, might run simultaneously on multiple processors in the system.
-Softirq never preempts another softirq running on the same processor, no need to disable bottom halves.
 
----------------------------------------------------------------------------------------------------------------------------------------------
-Reader-Writer Spin Locks:
-- Writing demands mutual exclusion
-- Multiple concurrent readers are safe so long as there are no writers
-- Reader-writer spin locks provide separate reader and writer variants of the lock
-- One or more readers can concurrently hold the reader lock.
-- The writer lock - can be held by at most one writer with no concurrent readers.
-- Reader/writer locks -> shared/exclusive -> concurrent/exclusive locks 
-- because the lock is available in a shared (for readers) and an exclusive (for writers) form.
-- Usage is similar to spin locks
+As soon as an interrupt signal is received on a particular pin on a processor, the processor jumps to a unique location in a memory and executes the code present there. In this manner the kernel knows the IRQ number of the incoming interrupt.
+after saving the data of the current process in the stack, do_IRQ() is called.
 
-DEFINE_RWLOCK(mr_rwlock);
-Then, in the reader code path:
-read_lock(&mr_rwlock);
-/* critical section (read only) ... */ 
-read_unlock(&mr_rwlock);
+usigned int do_IRQ (stuct pt_regs_ regs)
+On PC -> mask_and_ack_8259A()
 
-Finally, in the writer code path:
-write_lock(&mr_rwlock);
-/* critical section (read and write) ... */ 
-write_unlock(&mr_lock);
+do_IRQ() ensures that a valid IH is registered on the line adn that it is enabled and not currently executing. if so calls handle_IRQ_event(), defined in kernel/irq/handler.c, to rrun the installed interrupt handlers for the line
 
-read_lock_irqsave()
-read_unlock_irq()
 
-Read lock > write lock:
-- If the read lock is held and a writer is waiting for exclusive access.
-- readers that attempt to acquire the lock continue to succeed.
-- The spinning writer does not acquire the lock until all readers release the lock.
-- Therefore, a sufficient number of readers can starve pending writers.
+
+cat /proc/interrupts
+
+initial assembly routines are located in arch/x86/kernel/entry_64.s
+c arch/c86/kernel/irq.c
+fs/proc
+/proc/interrupts show_interrupts()
+
+Procfs is a virtual file system that exists only in the kernel memory mounted at /proc
+
+
+the local_irq_dsiable routine is dangerous if interrupts were already dsiabled prior to it's invocation
+The corresponding call unconditioanlly enables interrupts, dispite the fact they were off to begin with.
+local_irq_save(flags);
+
+local_irq_restore(flags);
+
+
+
+!Contention
+- Contention describes a lock currently in use but that another thread is trying to acquire.
+- Highlt contented lock often has threads waiting for it.
+- Highly contented locks then become bottle neck in the system
 
 
 
 
-!Semaphores!
-
-Semaphores in linux are sleeping locks:
-- task <- semaphore but is unavailable, 
-- The semaphore :
-	1. places the task onto a wait queue and 
-	2. puts the task to sleep.
-- The processor is then free to execute other code.
-- When the semaphore becomes available, 1 of the tasks on the wait queue is awakened 
-- So that it can then acquire the semaphore.
-- In this manner, the key (read: semaphore) continues to ensure that there is only
-one person (read: thread of execution) inside the room (read: critical region) at one time.
-- This provides better processor utilization than spin locks because there is no time spent
-busy looping, but semaphores have much greater overhead than spin locks. 
-- Life is always a trade-off.
-- Conversely, semaphores are not optimal for locks that are held for short periods 
-because the overhead of sleeping, maintaining the wait queue, and waking back up
-can easily outweigh the total lock hold time.
-- You cannot hold a spin lock while you acquire a semaphore, because you might
-have to sleep while waiting for the semaphore, and you cannot sleep while holding
-a spin lock.
-
-- the decision between semaphore and spin lock should be based on lock hold time. 
-- Ideally, all your locks should be held as briefly as possible.
-- With semaphores, however, longer lock hold times are more acceptable.
-- Additionally, unlike spin locks, semaphores do not disable kernel preemption and, 
-consequently, code holding a semaphore can be preempted.
-- This means semaphores do not adversely affect scheduling latency.
 
 
 
-Counting and Binary Semaphores:
-- the number of permissible simultaneous holders of semaphores can be set at 
-declaration time.
-- This value is called the usage count or simply the count.
-- The most common value is to allow, like spin locks, only one lock holder at a time
-- binary semaphore (because it is either held by
-one task or not held at all) or a mutex (because it enforces mutual exclusion).
-- Semaphores were formalized by Edsger Wybe Dijkstra 3 in 1968 as a generalized lock-
-ing mechanism.
-- A semaphore supports two atomic operations, P() and V() , named after
-the Dutch word Proberen, to test (literally, to probe), and the Dutch word Verhogen, to in-
-crement. 
-- Later systems called these methods down() and up() , respectively, and so does Linux.
-- The down() method is used to acquire a semaphore by decrementing the count by one. 
-- If the new count is zero or greater, the lock is acquired and the task can enter the critical region. 
-- If the count is negative, the task is placed on a wait queue, and the processor moves on to something else.
-- These names are used as verbs:You down a semaphore to acquire it.
-- The up() method is used to release a semaphore upon completion of a critical region.
-- This is called upping the semaphore.
-- The method increments the count value; if the semaphore’s wait queue is not empty, 
-one of the waiting tasks is awakened and allowed to sssacquire the semaphore.
+
+
+
+! Memory Management!
+
+i. 		Getting pages
+ii. 	Getting Zeroed pages
+iv. 	Freeing Pages
+
+- 	one low leve mechanism for requesting memory,
+- 	Several interfaces to access it.
+- 	Interfaces allocate memory with page-sized granularity <linux/gfp.h>
+
+- 	'struct page* alloc_pages(gfp_t gfp_mask, unsigned int order)' -> 2^order 
+		contiguous physical pages
+-	'void * page_address(struct page *page)'
+- 	'unisgned long __get_free_pages(gfp_t gfp_mask, unsigned int order)'
+-	works the same as alloc_pages(), except, returns logical address of the 
+	first requested page.
+-	If only one page is required,
+	'struct page* alloc_page(gfp_t gfp_mask)'
+	'unsigned long __get_free_page(gfp_t gfp_mask)'
+-	same but pass zero for the order (2^0=1 page)
+
+- 	zero Pages
+	
+	'unsigned long get_zeroed_page(unsinged int gfp_mask)'
+	same as __get_free_page(), except - every byte is unset.
+
+
+
+- 	'alloc_page(gfp_mask)' 			Allocates a single page, returns a pointer  
+									to its
+- 	'alloc_pages(gfp_mask,order)' 	Allocates 2 order pages, returns a pointer 
+									to the first page’s page structure
+- 	'__get_free_page(gfp_mask)' 	Allocates a single page, returns a 
+									pointer to its logical address
+-	'__get_free_pages(gfp_mask,' 	Allocates 2 order pages, returns a pointer 
+									to the first page’s logical address
+-	'get_zeroed_page(gfp_mask)'		Allocates a single page, zero its contents 
+									and returns a pointer to its logical address
+
+Freeing Pages:
+
+-	'void __free_pages(struct page *page, unsigned int order)'
+-	'void free_pages(unsigned long addr, unsigned int order)'
+-	'void free_page(unsigned long addr)'
+
+-	These interfaces -> allocating page-sized chunks of physically contiguous 
+	pages.
+-	byte-sized allications, kernel provides kmalloc()
+
+
+-	'void * kmalloc(size_t size, gfp_t flags)'
+-	on error returns NULL
+
+!FLAGS!
+
+- 	gfp_type -> <linux/types.h> as an unsigned int.
+-	'gfp' stands for __get_free_pages()
+-	flags are broken into 3:
+	i.		action modifiers
+	ii.		zone modifiers
+	iii.	types
+
+- Action modifiers	
+-	<linux/gfp.h>
+-	file <linux/slab.h>
+
+__GFP_WAIT 		The allocator can sleep.
+__GFP_HIGH 		The allocator can access emergency pools.
+__GFP_IO 		The allocator can start disk I/O.
+__GFP_FS 		The allocator can start filesystem I/O.
+__GFP_COLD 		The allocator should use cache cold pages.
+__GFP_NOWARN 	The allocator does not print failure warnings.
+__GFP_REPEAT 	The allocator repeats the allocation if it fails, but the 
+				allocation can potentially fail.
+__GFP_NOFAIL 	The allocator indefinitely repeats the allocation.The allocation
+				cannot fail.
+__GFP_NORETRY 	The allocator never retries if the allocation fails.
+__GFP_NOMEMALLOC The allocator does not fall back on reserves.
+__GFP_HARDWALL 	The allocator enforces “hardwall” cpuset boundaries.
+__GFP_RECLAIMABLE The allocator marks the pages reclaimable.
+__GFP_COMP 		The allocator adds compound page metadata (used internally
+				by the hugetlb code).
+
+
+-	ptr = kmalloc(size, __GFP_WAIT | __GFP_IO | __GFP_FS);
+
+
+!High Memory Mappings!
+
+-	Pages in high memory might not be permanently mapped into the kernel’s
+	address space.
+-	Thus, pages obtained via alloc_pages() with the __GFP_HIGHMEM flag
+	might not have a logical address.
+
+!Per-CPU Data at Compile Time!
+
+The header <linux/percpu.h> declares all the routines.You can find the actual defini-
+tions there, in mm/slab.c , and in <asm/percpu.h> .
+
+
+-	DEFINE_PER_CPU(type, name);
+-	get_cpu_var()
+-	put_cpu_var()
+
+-	get_cpu_var(name)++;	/* increment name on this processor */
+-	put_cpu_var(name);		/*done; enable kernel preemption */
+-	per_cpu(name, cpu)++;	/* increment name on the given processor */
+
+
+!Per-CPU Data at Runtime!
+
+void *alloc_percpu(type); 					/* a macro */
+void *__alloc_percpu(size_t size, size_t align);
+void free_percpu(const void *);

@@ -1,0 +1,92 @@
+# notes
+
+
+static void __exit cleanup_function(void)
+{
+/* Cleanup code here */
+}
+module_exit(cleanup_function);
+
+# cleanup fucntion is declared void.
+
+
+!Error handling during initialization!
+
+err are defined in <linux/errno.h>
+
+!Module loading races!
+
+- 	Do not register any facility until all of your internal initialization 
+	needed to support that facility has been completed.
+
+!Module Parameters!
+
+
+
+
+------------------------------------------------------------------------------
+Major and Minor Numbers:
+
+-	char devices accessed through names in the filesystem
+- 	are called 'special files' or 'nodes' of the filesystem tree
+-	identified with 'c' in /dev
+
+'Major Numbers' 
+-	indentifies the driver associated with the device.
+
+'Minor Numbers'
+-	used by kernel to determine excatly which device is being referred to.
+- 	can get either the direct pointer to a device from kernel, or 
+	use the minor number yourself as an index into a local array of devices.
+
+-	kernel only knows the fact that they refer to devices implemented by your 
+	device
+
+
+
+The internal representation of devices numbers:
+
+- dev_t type (defined in <linux/types.h>) -> device numbers
+- k2.6 dev_t	-> 	32-bit quantity
+				->	12 bits for major number
+				->	20 bits for minor number
+-	don't assume, to get the major and minor numbers use
+
+'MAJOR(dev_t dev);'
+'MINOR(dev_t dev);'
+
+other way around,
+
+'MKDEV(int major,int minor);'
+
+
+
+
+Allocating and freeing device numbers:
+
+-	first thing char device needs to do is obtain one or more deivce numbers 
+	to work with.
+
+'int register_chrdev_region( dev_t first, unsinged int count, char* name );'
+
+- 	name-> name of the device that should be associated with this number range
+	; it will appear in '/proc/devices' and 'sysfs'
+
+- major number can be allocated dynamically 
+'int alloc_chrdev_region( dev_t *dev, unsinged int firstminor, unsigned int count, char* name )'
+
+
+-	device nunmbers are freed with (called in module's cleanup fucntion)
+	'void unregister_chrdev_region(dev_t first, unsigned int count);'
+
+
+
+-	The above functions allocate device numbers for driver’s use, but they 
+	do not tell the kernel anything about what you will actually do with 
+	those numbers.
+
+Dynamic ALlocation of Major Numbers:
+
+-	Statically assinged major device nunmbers -> Documentation/devices.txt
+-	alloc_chrdev_region, cause randomly picked free number might be problmatic
+-	Once the number is assigned it can be read from /proc/devcies
